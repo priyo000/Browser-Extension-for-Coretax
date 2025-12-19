@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        body {
+            width: 300px;
+            padding: 10px;
+            font-family: sans-serif;
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            margin-top: 10px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+        }
+
+        #status {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #333;
+        }
+
+        input {
+            width: 100%;
+            padding: 8px;
+            margin-top: 5px;
+            box-sizing: border-box;
+        }
+
+        label {
+            font-size: 12px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <h3>Coretax Easy Inti Group</h3>
+    <p style="font-size:11px;">
+        1. <b>Wajib Reload Tab ini</b> (F5) satu kali.<br>
+        2. Klik tombol <b>Refresh</b> (ikon panah melingkar) di tabel data pajak.<br>
+        3. Tunggu status "SUDAH SIAP!".<br>
+        4. Klik Tombol "Ambil Seluruh Data".
+    </p>
+
+    <!-- <button id="openTabBtn"
+        style="width: auto; padding: 5px; margin-bottom: 10px; font-size: 10px; background-color: #6c757d;">Pop-out
+        (Buka di Tab Baru)</button> -->
+
+    <button id="startBtn">Ambil Seluruh Data (XLS)</button>
+    <button id="dlPdfBtn" style="background-color: #28a745; margin-top: 5px;">Download Semua PDF</button>
+    <div id="status">Tunggu Sebentar lagi disiapin...</div>
+
+
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
