@@ -286,7 +286,7 @@ function exportToExcel(data, sourceUrl = "") {
                 item.TaxInvoiceYear || "",
                 item.PeriodCredit || "", // Masa Pajak Pengkreditkan
                 item.YearCredit || "",   // Tahun Pajak Pengkreditan
-                item.InputInvoiceStatus || item.TaxInvoiceStatus || "",
+                item.TaxInvoiceStatus || "",
                 item.SellingPrice || 0,
                 item.OtherTaxBase || 0,
                 item.VAT || 0,
