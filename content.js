@@ -458,19 +458,39 @@ async function startPdfDownloadProcess(listUrl, token, listPayload, capturedResp
             // Construct Payload
             // DocumentDate is current time as per user request
             const now = new Date();
-            // Format: YYYY-MM-DDTHH:mm:ss (removing milliseconds for cleaner look matching example)
+            // Format: YYYY-MM-DDTHH:mm:ss (No 'Z' as per user example)
             const currentFormatted = now.toISOString().split('.')[0];
 
+            // AUTO-DETECT Menu Type
+            // Logic: 
+            // 1. Check URL for 'input' (Incoming) vs 'output' (Outgoing)
+            // 2. Check URL for 'return' OR Tax Number for 'RET' prefix
+            const lowerUrl = (listUrl || "").toLowerCase();
+            const isInput = lowerUrl.includes("input"); // e.g. inputinvoice/list
+            
+            // Check for Retur characteristic (URL has 'return' OR Number starts with RET)
+            const isReturn = lowerUrl.includes("return") || 
+                             (item.TaxInvoiceNumber && typeof item.TaxInvoiceNumber === 'string' && item.TaxInvoiceNumber.startsWith("RET"));
+
+            let menuType = "Outgoing"; // Default
+            if (isInput) {
+                menuType = isReturn ? "IncomingReturn" : "Incoming";
+            } else {
+                menuType = isReturn ? "OutgoingReturn" : "Outgoing";
+            }
+
             const pdfPayload = {
-                "EInvoiceRecordIdentifier": item.RecordId,
-                "EInvoiceAggregateIdentifier": item.AggregateIdentifier,
-                "DocumentAggregateIdentifier": item.DocumentFormAggregateIdentifier,
-                "TaxpayerAggregateIdentifier": item.SellerTaxpayerAggregateIdentifier,
+                "EInvoiceRecordIdentifier": item.RecordId || item.recordId,
+                "EInvoiceAggregateIdentifier": item.AggregateIdentifier || item.aggregateIdentifier,
+                "DocumentAggregateIdentifier": item.DocumentFormAggregateIdentifier || item.documentFormAggregateIdentifier,
+                "TaxpayerAggregateIdentifier": item.SellerTaxpayerAggregateIdentifier || item.sellerTaxpayerAggregateIdentifier,
                 "LetterNumber": item.TaxInvoiceNumber,
                 "DocumentDate": currentFormatted,
-                "EInvoiceMenuType": "Outgoing",
+                "EInvoiceMenuType": menuType,
                 "TaxInvoiceStatus": item.TaxInvoiceStatus
             };
+            
+            console.log("Preparing PDF Payload:", JSON.stringify(pdfPayload));
 
             try {
                 // Construct specific filename: OutputTaxInvoice-RecordId-SellerTIN-TaxNumber-BuyerTIN
@@ -511,7 +531,10 @@ async function downloadSinglePdf(url, token, payload, filenameLabel) {
         credentials: 'include'
     });
 
-    if (!response.ok) throw new Error("Server error " + response.status);
+    if (!response.ok) {
+        const errText = await response.text();
+        throw new Error("Server error " + response.status + " | " + errText.substring(0, 150));
+    }
 
     const contentType = response.headers.get("content-type");
 
