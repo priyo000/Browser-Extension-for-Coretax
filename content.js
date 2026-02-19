@@ -323,7 +323,14 @@ function exportToExcel(data, sourceUrl = "") {
 
         rows = data.map(item => {
             const taxNumber = item.TaxInvoiceNumber || "";
-            const transCode = taxNumber.length >= 2 ? taxNumber.substring(0, 2) : "";
+            let transCode = "";
+            
+            if (taxNumber.length >= 2) {
+                transCode = taxNumber.substring(0, 2);
+            } else if (item.TaxInvoiceCode && item.TaxInvoiceCode.length >= 2) {
+                // Fallback: Ambil 2 digit terakhir dari TaxInvoiceCode (Misal "TD.00304" -> "04")
+                transCode = item.TaxInvoiceCode.slice(-2);
+            }
             const reportedByVat = (item.ReportedByVATCollector === null || item.ReportedByVATCollector === undefined) ? "" : (item.ReportedByVATCollector ? "TRUE" : "FALSE");
 
             return [
