@@ -7,6 +7,11 @@ s.onload = function () {
 };
 (document.head || document.documentElement).appendChild(s);
 
+// PDF.js Configuration
+if (typeof pdfjsLib !== 'undefined') {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.min.js');
+}
+
 let capturedConfig = null;
 
 // Listen for intercepted data from injected.js
@@ -53,6 +58,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         // Pass captured response body as 4th argument
         startPdfDownloadProcess(urlToUse, tokenToUse, payloadToUse, capturedConfig.response);
+        sendResponse({ status: "started" });
+    }
+
+    if (request.action === "start_detailed_excel") {
+        if (!capturedConfig) {
+            notifyPopup("ERROR: No data captured. Refresh & Load Table first.");
+            sendResponse({ status: "error", message: "No data captured" });
+            return;
+        }
+
+        const urlToUse = capturedConfig.url;
+        const tokenToUse = capturedConfig.auth;
+        let payloadToUse = null;
+        try {
+            payloadToUse = typeof capturedConfig.payload === 'string' ? JSON.parse(capturedConfig.payload) : capturedConfig.payload;
+        } catch (e) { }
+
+        if (!payloadToUse) {
+            notifyPopup("Payload Error");
+            sendResponse({ status: "error", message: "Payload Error" });
+            return;
+        }
+
+        startDetailedExcelProcess(urlToUse, tokenToUse, payloadToUse, capturedConfig.response);
         sendResponse({ status: "started" });
     }
 
@@ -502,13 +531,6 @@ async function startPdfDownloadProcess(listUrl, token, listPayload, capturedResp
             try {
                 // Construct specific filename: OutputTaxInvoice-RecordId-SellerTIN-TaxNumber-BuyerTIN
                 // Using fallback "0" or "X" if field missing to keep structure
-                const fRecordId = item.RecordId || "UnknownID";
-                const fSeller = item.SellerTIN || "UnknownSeller";
-                const fTaxNo = item.TaxInvoiceNumber || "UnknownTaxNo";
-                const fBuyer = item.BuyerTIN || "UnknownBuyer";
-
-                const customFilename = `OutputTaxInvoice-${fRecordId}-${fSeller}-${fTaxNo}-${fBuyer}`;
-
                 await downloadSinglePdf(pdfApiUrl, token, pdfPayload, customFilename);
                 successCount++;
             } catch (err) {
@@ -525,6 +547,175 @@ async function startPdfDownloadProcess(listUrl, token, listPayload, capturedResp
         console.error(e);
         notifyPopup("Error downloading PDFs: " + e.message);
     }
+}
+
+// DETAILED EXCEL PROCESS (The User's specific request)
+async function startDetailedExcelProcess(listUrl, token, listPayload, capturedResponse) {
+    try {
+        let items = [];
+        if (capturedResponse) {
+            items = findItemsArray(capturedResponse);
+        }
+
+        if (!items || items.length === 0) {
+            notifyPopup("Fetching list for Detailed Export...");
+            const response = await fetch(listUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Authorization": token },
+                body: JSON.stringify(listPayload),
+                credentials: 'include'
+            });
+            if (!response.ok) throw new Error("Failed to fetch list");
+            const data = await response.json();
+            items = findItemsArray(data);
+        }
+
+        if (!items || items.length === 0) {
+            notifyPopup("No items found to process.");
+            return;
+        }
+
+        notifyPopup(`Processing ${items.length} invoices. This involves downloading PDFs...`);
+
+        const pdfApiUrl = "https://coretaxdjp.pajak.go.id/einvoiceportal/api/DownloadInvoice/download-invoice-document";
+        const allRows = [];
+
+        // Optimasi: Gunakan Batch Processing agar lebih cepat (Turbo Mode)
+        const BATCH_SIZE = 5; // Proses 5 PDF sekaligus
+        for (let i = 0; i < items.length; i += BATCH_SIZE) {
+            const batch = items.slice(i, i + BATCH_SIZE);
+            
+            await Promise.all(batch.map(async (invoice, bIdx) => {
+                const currentIdx = i + bIdx + 1;
+                notifyPopup(`Processing ${currentIdx}/${items.length}: ${invoice.TaxInvoiceNumber || invoice.LetterNumber}...`);
+
+                // 1. Fetch PDF binary/json
+                const now = new Date();
+                const currentFormatted = now.toISOString().split('.')[0];
+                const lowerUrl = (listUrl || "").toLowerCase();
+                const isInput = lowerUrl.includes("input");
+                
+                const apiNo = invoice.LetterNumber || invoice.TaxInvoiceNumber || invoice.taxInvoiceNumber || "";
+                const isStartingWithRet = String(apiNo).toUpperCase().startsWith("RET");
+                const isReturn = lowerUrl.includes("return") || isStartingWithRet;
+                
+                let menuType = isInput ? (isReturn ? "IncomingReturn" : "Incoming") : (isReturn ? "OutgoingReturn" : "Outgoing");
+
+                const pdfPayload = {
+                    "EInvoiceRecordIdentifier": invoice.RecordId || invoice.recordId,
+                    "EInvoiceAggregateIdentifier": invoice.AggregateIdentifier || invoice.aggregateIdentifier,
+                    "DocumentAggregateIdentifier": invoice.DocumentFormAggregateIdentifier || invoice.documentFormAggregateIdentifier,
+                    "TaxpayerAggregateIdentifier": invoice.SellerTaxpayerAggregateIdentifier || invoice.sellerTaxpayerAggregateIdentifier,
+                    "LetterNumber": apiNo,
+                    "DocumentDate": currentFormatted,
+                    "EInvoiceMenuType": menuType,
+                    "TaxInvoiceStatus": invoice.TaxInvoiceStatus
+                };
+
+                try {
+                    const pdfResponse = await fetch(pdfApiUrl, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", "Authorization": token },
+                        body: JSON.stringify(pdfPayload),
+                        credentials: 'include'
+                    });
+
+                    if (pdfResponse.ok) {
+                        const json = await pdfResponse.json();
+                        let base64 = null;
+                        if (json.Payload && json.Payload.Message) base64 = json.Payload.Message.Data;
+                        else if (json.Data) base64 = json.Data;
+
+                        if (base64) {
+                            // 2. Extract Data from PDF
+                            const extracted = await extractInfoFromPdf(base64); 
+                            const pdfItems = (extracted && extracted.items && extracted.items.length > 0) 
+                                ? extracted.items 
+                                : [{ productName: "Extraction Failed", unit: "", unitPrice: 0, total: 0 }];
+
+                            // 3. Create Excel Rows
+                            let fNoFaktur = "";
+                            let fNoRetur = "";
+                            if (isStartingWithRet) fNoRetur = apiNo; else fNoFaktur = apiNo;
+                            
+                            if (extracted.returnNumber) fNoRetur = extracted.returnNumber;
+                            if (extracted.refInvoice) fNoFaktur = extracted.refInvoice;
+
+                            pdfItems.forEach((item, index) => {
+                                const isLast = (index === pdfItems.length - 1);
+                                allRows.push([
+                                    (invoice.TaxInvoiceDate || "").substring(0, 10),
+                                    fNoFaktur, fNoRetur,
+                                    item.productName || "",                            // 3: NAMA BARANG
+                                    item.qty || 0,                                     // 4: JUMLAH SATUAN
+                                    item.unit || "",                                   // 5: SATUAN
+                                    item.unitPrice || 0,                               // 6: HARGA SATUAN PER ITEM
+                                    item.total || 0,                                   // 7: TOTAL HARGA PER ITEM
+                                    isLast ? (invoice.SellingPrice || 0) : "",         // 8: TOTAL PERFAKTUR (DPP)
+                                    isLast ? (invoice.VAT || 0) : "",                  // 9: PPN
+                                    isLast ? ((invoice.SellingPrice || 0) + (invoice.VAT || 0)) : "" // 10: TOTAL DPP + PPN
+                                ]);
+                            });
+                            // Spacer
+                            allRows.push(["", "", "", "", "", "", "", "", "", "", ""]);
+                        }
+                    }
+                } catch (err) {
+                    console.error("Detailed analyze failed", apiNo, err);
+                    allRows.push([(invoice.TaxInvoiceDate || "").substring(0, 10), apiNo, "", "ERROR: PDF FAIL", "", 0, 0, 0, 0, 0, 0]);
+                    allRows.push(["", "", "", "", "", "", "", "", "", "", ""]);
+                }
+            }));
+
+            // Jeda antar batch (Turbo: 200ms)
+            await new Promise(r => setTimeout(r, 200));
+        }
+
+        // 4. Generate the Final Excel
+        const headers = ["TANGGAL", "NO FAKTUR", "NO RETUR", "NAMA BARANG", "JUMLAH SATUAN", "SATUAN", "HARGA SATUAN PER ITEM", "TOTAL HARGA PER ITEM", "TOTAL PERFAKTUR (DPP)", "PPN", "TOTAL DPP PERFAKTUR + PPN"];
+        exportDetailedToExcel(headers, allRows);
+        notifyPopup("Detailed Excel Exported!");
+
+    } catch (e) {
+        console.error(e);
+        notifyPopup("Detailed Export Error: " + e.message);
+    }
+}
+
+function exportDetailedToExcel(headers, rows) {
+    let xml = '<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n';
+    xml += '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:html="http://www.w3.org/TR/REC-html40">\n';
+    xml += ' <Worksheet ss:Name="Sheet1">\n  <Table>\n';
+    
+    // Headers
+    xml += '   <Row>\n';
+    headers.forEach(h => { xml += `    <Cell><Data ss:Type="String">${h}</Data></Cell>\n`; });
+    xml += '   </Row>\n';
+
+    // Rows
+    rows.forEach(row => {
+        xml += '   <Row>\n';
+        row.forEach((field, idx) => {
+            let type = "String";
+            // Numeric for price/qty columns ([4] is Qty, [6:] are prices) but ONLY if there is data
+            const numericIndices = [4, 6, 7, 8, 9, 10];
+            if (numericIndices.includes(idx) && field !== "" && field !== null && field !== undefined) {
+                type = "Number";
+            }
+            
+            let cleanVal = String(field || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            xml += `    <Cell><Data ss:Type="${type}">${cleanVal}</Data></Cell>\n`;
+        });
+        xml += '   </Row>\n';
+    });
+
+    xml += '  </Table>\n </Worksheet>\n</Workbook>';
+    const blob = new Blob([xml], { type: "application/vnd.ms-excel" });
+    const url = URL.createObjectURL(blob);
+    const filename = `tax_item_details_${new Date().toISOString().slice(0, 10)}.xls`;
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
 }
 
 async function downloadSinglePdf(url, token, payload, filenameLabel) {
@@ -569,6 +760,15 @@ async function downloadSinglePdf(url, token, payload, filenameLabel) {
 
         if (base64Data) {
             try {
+                // FEATURE: Extract Product Name for better filename
+                const extractedInfo = await extractInfoFromPdf(base64Data);
+                if (extractedInfo && extractedInfo.productName) {
+                    console.log("Extracted Product Name:", extractedInfo.productName);
+                    // Add product name to filename prefix (limit length)
+                    const cleanName = extractedInfo.productName.substring(0, 30).replace(/[^a-zA-Z0-9]/g, '_');
+                    finalFilename = `${cleanName}-${finalFilename}`;
+                }
+
                 // Convert Base64 to Blob manually to avoid URL length limits
                 const binaryString = atob(base64Data);
                 const len = binaryString.length;
@@ -652,4 +852,135 @@ function findItemsArray(data) {
     }
 
     return search(data, 0);
+}
+
+// PDF EXTRACTION HELPER
+async function extractInfoFromPdf(base64) {
+    if (typeof pdfjsLib === 'undefined') return null;
+
+    try {
+        const binaryString = atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        const loadingTask = pdfjsLib.getDocument({ data: bytes });
+        const pdf = await loadingTask.promise;
+        const page = await pdf.getPage(1);
+        const textContent = await page.getTextContent();
+        
+        const strings = textContent.items.map(item => item.str.trim()).filter(s => s.length > 0);
+        console.log("PDF TEXT STRINGS:", strings);
+
+        const foundItems = [];
+        
+        // Find indices of headers to bound the search
+        const headerIdx = strings.findIndex(s => s.includes("Nama Barang Kena Pajak"));
+        // Boundary: end of items table usually starts with "Harga Jual" summary or "Potongan Harga"
+        let footerIdx = strings.findIndex(s => s.includes("Potongan Harga"));
+        if (footerIdx === -1) footerIdx = strings.findIndex(s => s.includes("Harga Jual / Penggantian / Uang Muka"));
+        if (footerIdx === -1) footerIdx = strings.length;
+
+        if (headerIdx !== -1) {
+            // Loop through potential rows
+            for (let i = headerIdx; i < footerIdx - 2; i++) {
+                // Heuristic: No (digit) -> Code (digit strings) -> Name (text) -> Details (Rp...x...) -> Total (price string)
+                if (/^\d+$/.test(strings[i]) && strings[i].length <= 3) {
+                    const no = strings[i];
+                    const nextIsCode = /^\d+$/.test(strings[i+1]) || (strings[i+1].length >= 5);
+                    
+                    if (nextIsCode) {
+                        const code = strings[i+1];
+                        const name = strings[i+2];
+                        let unit = "";
+                        let unitPrice = 0;
+                        let qty = 0;
+                        let lineTotal = 0;
+
+                        // Details line usually "Rp 3.040,54 x 4,00 Piece"
+                        // Or might be split into multiple strings
+                        // Look ahead for the Rp line
+                        for (let j = i + 3; j < i + 10 && j < footerIdx; j++) {
+                            if (strings[j].includes("Rp") && strings[j].includes("x")) {
+                                const detailText = strings[j];
+                                // Regex: Rp (price) x (qty) (unit)
+                                // Example: Rp 3.040,54 x 4,00 Piece
+                                const match = detailText.match(/Rp\s*([\d.,]+)\s*x\s*([\d.,]+)\s*(\w+)/);
+                                if (match) {
+                                    unitPrice = parseFloat(match[1].replace(/\./g, '').replace(',', '.'));
+                                    qty = parseFloat(match[2].replace(/\./g, '').replace(',', '.'));
+                                    unit = match[3];
+                                }
+                                
+                                // The line total is usually one of the next strings that looks like a price but NOT the detail line
+                                // Example: "12.162,16"
+                                for (let k = j + 1; k < j + 4 && k < footerIdx; k++) {
+                                     // Check if string contains . and , and looks like a price
+                                     if (/^[\d.]+,\d{2}$/.test(strings[k])) {
+                                         lineTotal = parseFloat(strings[k].replace(/\./g, '').replace(',', '.'));
+                                         break;
+                                     }
+                                }
+                                break;
+                            }
+                        }
+
+                        if (name) {
+                            foundItems.push({
+                                productName: name,
+                                unit: unit,
+                                unitPrice: unitPrice,
+                                qty: qty,
+                                total: lineTotal
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // NOMOR NOTA RETUR & REFERENSI EXTRACTION
+        let returnNumber = "";
+        let refInvoice = "";
+
+        // 1. Look for document number in headers (RET...)
+        const retIdx = strings.findIndex(s => s.toUpperCase().includes("NOMOR") && s.toUpperCase().includes("RET"));
+        if (retIdx !== -1) {
+            const raw = strings[retIdx];
+            const matchRet = raw.match(/(RET\d+)/i);
+            if (matchRet) returnNumber = matchRet[1];
+        }
+
+        // 2. Look for Original Invoice Reference
+        // Matches common variations: "atas nomor Faktur Pajak", "Nomor Faktur Pajak yang diretur", etc.
+        const refIdx = strings.findIndex(s => {
+            const lower = s.toLowerCase();
+            return (lower.includes("faktur pajak") && (lower.includes("atas nomor") || lower.includes("diretur") || lower.includes("nomor:")));
+        });
+
+        if (refIdx !== -1) {
+            const raw = strings[refIdx];
+            // Match exactly 16 digits or 13 digits (standard FP length)
+            const match = raw.match(/(\d{13,16})/); 
+            if (match) {
+                refInvoice = match[1];
+            } else if (strings[refIdx + 1]) {
+                const matchNext = strings[refIdx + 1].match(/(\d{13,16})/);
+                if (matchNext) refInvoice = matchNext[1];
+            }
+        }
+
+        return {
+            items: foundItems,
+            returnNumber: returnNumber,
+            refInvoice: refInvoice,
+            productName: foundItems.length > 0 ? foundItems[0].productName : ""
+        };
+
+    } catch (err) {
+        console.warn("PDF extraction failed", err);
+        return null;
+    }
 }

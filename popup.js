@@ -57,6 +57,31 @@ document.getElementById('dlPdfBtn').addEventListener('click', async () => {
     });
 });
 
+// Detailed Excel Handler
+document.getElementById('detailedBtn').addEventListener('click', async () => {
+    let targetTab = null;
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const activeTab = tabs[0];
+
+    if (activeTab && activeTab.url && activeTab.url.includes("chrome-extension://")) {
+        try {
+            const matchedTabs = await chrome.tabs.query({ url: "*://coretaxdjp.pajak.go.id/*" });
+            if (matchedTabs.length > 0) targetTab = matchedTabs[0];
+            else { updateStatus("Error: Tab Pajak tidak ditemukan."); return; }
+        } catch (err) { updateStatus('Error finding tab.'); return; }
+    } else {
+        targetTab = activeTab;
+    }
+
+    if (!targetTab) { updateStatus('Error: Target tab not found.'); return; }
+
+    chrome.tabs.sendMessage(targetTab.id, {
+        action: "start_detailed_excel"
+    }, (response) => {
+        if (chrome.runtime.lastError) updateStatus('Error: ' + chrome.runtime.lastError.message);
+        else updateStatus('Mulai ekstraksi detail barang... (Mohon Tunggu)');
+    });
+});
 
 // Popup Logic
 // document.getElementById('openTabBtn').addEventListener('click', () => {

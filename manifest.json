@@ -1,37 +1,29 @@
 {
-    "manifest_version": 3,
-    "name": "Tax Data Fetcher",
-    "version": "1.0",
-    "description": "Fetch all data by iterating pagination",
-    "permissions": [
-        "activeTab",
-        "scripting",
-        "downloads",
-        "tabs"
-    ],
-    "action": {
-        "default_popup": "popup.html"
-    },
-    "content_scripts": [
-        {
-            "matches": [
-                "<all_urls>"
-            ],
-            "js": [
-                "content.js"
-            ],
-            "run_at": "document_start",
-            "all_frames": true
-        }
-    ],
-    "web_accessible_resources": [
-        {
-            "resources": [
-                "injected.js"
-            ],
-            "matches": [
-                "<all_urls>"
-            ]
-        }
-    ]
+  "manifest_version": 3,
+  "name": "Coretax Easy",
+  "version": "1.0",
+  "description": "Fetch all data by iterating pagination",
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "permissions": ["activeTab", "scripting", "downloads", "tabs"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["pdf.min.js", "content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js", "pdf.worker.min.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }
