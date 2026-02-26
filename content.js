@@ -595,9 +595,9 @@ async function startDetailedExcelProcess(listUrl, token, listPayload, capturedRe
                 const lowerUrl = (listUrl || "").toLowerCase();
                 const isInput = lowerUrl.includes("input");
                 
-                const apiNo = invoice.LetterNumber || invoice.TaxInvoiceNumber || invoice.taxInvoiceNumber || "";
+                const apiNo = invoice.ReturnNumber || invoice.LetterNumber || invoice.TaxInvoiceNumber || invoice.taxInvoiceNumber || "";
                 const isStartingWithRet = String(apiNo).toUpperCase().startsWith("RET");
-                const isReturn = lowerUrl.includes("return") || isStartingWithRet;
+                const isReturn = lowerUrl.includes("return") || isStartingWithRet || !!invoice.ReturnNumber;
                 
                 let menuType = isInput ? (isReturn ? "IncomingReturn" : "Incoming") : (isReturn ? "OutgoingReturn" : "Outgoing");
 
@@ -636,34 +636,60 @@ async function startDetailedExcelProcess(listUrl, token, listPayload, capturedRe
                             // 3. Create Excel Rows
                             let fNoFaktur = "";
                             let fNoRetur = "";
-                            if (isStartingWithRet) fNoRetur = apiNo; else fNoFaktur = apiNo;
-                            
+                            let fTglFaktur = "";
+                            let fTglRetur = "";
+
+                            const apiDate = (invoice.TaxInvoiceDate || "").substring(0, 10);
+                            const apiReturnDate = (invoice.ReturnDate || "").substring(0, 10);
+
+                            if (isReturn) {
+                                // DOCUMENT IS A RETURN
+                                fNoRetur = apiNo;
+                                fTglRetur = apiReturnDate || extracted.retDate || apiDate; 
+                                
+                                fNoFaktur = extracted.refInvoice || "";
+                                fTglFaktur = extracted.refDate || "";
+                                
+                                // Special case: if it's a return but API provided Ref Information in TaxInvoiceDate
+                                if (!fTglFaktur && apiDate && apiDate !== apiReturnDate) {
+                                    fTglFaktur = apiDate;
+                                }
+                            } else {
+                                // DOCUMENT IS A NORMAL INVOICE
+                                fNoFaktur = apiNo;
+                                fTglFaktur = apiDate;
+                                fNoRetur = "";
+                                fTglRetur = "";
+                            }
+
+                            // Overwrite with PDF data if specific return info found
                             if (extracted.returnNumber) fNoRetur = extracted.returnNumber;
-                            if (extracted.refInvoice) fNoFaktur = extracted.refInvoice;
 
                             pdfItems.forEach((item, index) => {
                                 const isLast = (index === pdfItems.length - 1);
                                 allRows.push([
-                                    (invoice.TaxInvoiceDate || "").substring(0, 10),
-                                    fNoFaktur, fNoRetur,
-                                    item.productName || "",                            // 3: NAMA BARANG
-                                    item.qty || 0,                                     // 4: JUMLAH SATUAN
-                                    item.unit || "",                                   // 5: SATUAN
-                                    item.unitPrice || 0,                               // 6: HARGA SATUAN PER ITEM
-                                    item.total || 0,                                   // 7: TOTAL HARGA PER ITEM
-                                    isLast ? (invoice.SellingPrice || 0) : "",         // 8: TOTAL PERFAKTUR (DPP)
-                                    isLast ? (invoice.VAT || 0) : "",                  // 9: PPN
-                                    isLast ? ((invoice.SellingPrice || 0) + (invoice.VAT || 0)) : "" // 10: TOTAL DPP + PPN
+                                    fTglFaktur,                                        // 0: TANGGAL FAKTUR
+                                    fTglRetur,                                         // 1: TANGGAL RETUR
+                                    fNoFaktur,                                         // 2: NO FAKTUR
+                                    fNoRetur,                                          // 3: NO RETUR
+                                    item.productName || "",                            // 4: NAMA BARANG
+                                    item.qty || 0,                                     // 5: JUMLAH SATUAN
+                                    item.unit || "",                                   // 6: SATUAN
+                                    item.unitPrice || 0,                               // 7: HARGA SATUAN PER ITEM
+                                    item.total || 0,                                   // 8: TOTAL HARGA PER ITEM
+                                    isLast ? (invoice.SellingPrice || 0) : "",         // 9: TOTAL PERFAKTUR (DPP)
+                                    isLast ? (invoice.VAT || 0) : "",                  // 10: PPN
+                                    isLast ? ((invoice.SellingPrice || 0) + (invoice.VAT || 0)) : "" // 11: TOTAL DPP + PPN
                                 ]);
                             });
                             // Spacer
-                            allRows.push(["", "", "", "", "", "", "", "", "", "", ""]);
+                            allRows.push(["", "", "", "", "", "", "", "", "", "", "", ""]);
                         }
                     }
                 } catch (err) {
                     console.error("Detailed analyze failed", apiNo, err);
-                    allRows.push([(invoice.TaxInvoiceDate || "").substring(0, 10), apiNo, "", "ERROR: PDF FAIL", "", 0, 0, 0, 0, 0, 0]);
-                    allRows.push(["", "", "", "", "", "", "", "", "", "", ""]);
+                    allRows.push([(invoice.TaxInvoiceDate || "").substring(0, 10), "", apiNo, "", "ERROR: PDF FAIL", 0, "", 0, 0, 0, 0, 0]);
+                    allRows.push(["", "", "", "", "", "", "", "", "", "", "", ""]);
                 }
             }));
 
@@ -672,7 +698,7 @@ async function startDetailedExcelProcess(listUrl, token, listPayload, capturedRe
         }
 
         // 4. Generate the Final Excel
-        const headers = ["TANGGAL", "NO FAKTUR", "NO RETUR", "NAMA BARANG", "JUMLAH SATUAN", "SATUAN", "HARGA SATUAN PER ITEM", "TOTAL HARGA PER ITEM", "TOTAL PERFAKTUR (DPP)", "PPN", "TOTAL DPP PERFAKTUR + PPN"];
+        const headers = ["TANGGAL FAKTUR", "TANGGAL RETUR", "NO FAKTUR", "NO RETUR", "NAMA BARANG", "JUMLAH SATUAN", "SATUAN", "HARGA SATUAN PER ITEM", "TOTAL HARGA PER ITEM", "TOTAL PERFAKTUR (DPP)", "PPN", "TOTAL DPP PERFAKTUR + PPN"];
         exportDetailedToExcel(headers, allRows);
         notifyPopup("Detailed Excel Exported!");
 
@@ -697,8 +723,9 @@ function exportDetailedToExcel(headers, rows) {
         xml += '   <Row>\n';
         row.forEach((field, idx) => {
             let type = "String";
-            // Numeric for price/qty columns ([4] is Qty, [6:] are prices) but ONLY if there is data
-            const numericIndices = [4, 6, 7, 8, 9, 10];
+            // Numeric indices according to new [Tgl Faktur, Tgl Retur, No F, No R, Nama, Qty, Unit, Price, Total, DPP, PPN, GrandTotal]
+            // New Indices: Qty: 5, Price: 7, Total: 8, DPP: 9, PPN: 10, Grand: 11
+            const numericIndices = [5, 7, 8, 9, 10, 11];
             if (numericIndices.includes(idx) && field !== "" && field !== null && field !== undefined) {
                 type = "Number";
             }
@@ -941,41 +968,66 @@ async function extractInfoFromPdf(base64) {
             }
         }
 
-        // NOMOR NOTA RETUR & REFERENSI EXTRACTION
+        // NOMOR NOTA RETUR & REFERENSI EXTRACTION (Lightweight Search)
         let returnNumber = "";
+        let retDate = "";
         let refInvoice = "";
+        let refDate = "";
 
-        // 1. Look for document number in headers (RET...)
-        const retIdx = strings.findIndex(s => s.toUpperCase().includes("NOMOR") && s.toUpperCase().includes("RET"));
-        if (retIdx !== -1) {
-            const raw = strings[retIdx];
-            const matchRet = raw.match(/(RET\d+)/i);
-            if (matchRet) returnNumber = matchRet[1];
+        // Helper for Indonesian Date Extraction
+        function parseIndoDate(text) {
+            if (!text) return "";
+            const months = {
+                "januari": "01", "februari": "02", "maret": "03", "april": "04",
+                "mei": "05", "juni": "06", "juli": "07", "agustus": "08",
+                "september": "09", "oktober": "10", "november": "11", "desember": "12"
+            };
+            const match = text.match(/(\d{1,2})\s+([a-zA-Z]+)\s+(\d{4})/i);
+            if (match) {
+                const d = match[1].padStart(2, '0');
+                const m = months[match[2].toLowerCase()] || "01";
+                const y = match[3];
+                return `${y}-${m}-${d}`;
+            }
+            return "";
         }
 
-        // 2. Look for Original Invoice Reference
-        // Matches common variations: "atas nomor Faktur Pajak", "Nomor Faktur Pajak yang diretur", etc.
-        const refIdx = strings.findIndex(s => {
-            const lower = s.toLowerCase();
-            return (lower.includes("faktur pajak") && (lower.includes("atas nomor") || lower.includes("diretur") || lower.includes("nomor:")));
-        });
+        const searchLimit = Math.min(strings.length, 40);
+        for (let i = 0; i < searchLimit; i++) {
+            const line = strings[i];
+            const lower = line.toLowerCase();
+            
+            // 1. Ekstraksi Tanggal Retur (Header)
+            if (lower.includes("tanggal retur")) {
+                const d = parseIndoDate(line);
+                if (d) retDate = d;
+            }
+            
+            // 2. Ekstraksi Tanggal Faktur Asal (Referensi)
+            if (lower.includes("tanggal faktur")) {
+                const d = parseIndoDate(line);
+                if (d) refDate = d;
+            }
 
-        if (refIdx !== -1) {
-            const raw = strings[refIdx];
-            // Match exactly 16 digits or 13 digits (standard FP length)
-            const match = raw.match(/(\d{13,16})/); 
-            if (match) {
-                refInvoice = match[1];
-            } else if (strings[refIdx + 1]) {
-                const matchNext = strings[refIdx + 1].match(/(\d{13,16})/);
-                if (matchNext) refInvoice = matchNext[1];
+            // 3. Ekstraksi Nomor Ref (Faktur Asal)
+            if (!refInvoice && (lower.includes("faktur pajak") || lower.includes("nomor"))) {
+                const match = line.match(/(\d{13,16})/);
+                if (match) refInvoice = match[1];
+            }
+
+            // 4. Ekstraksi Nomor Retur (Jika belum ada dari API)
+            if (!returnNumber && lower.includes("ret")) {
+                const matchRet = line.match(/(RET\d+)/i);
+                if (matchRet) returnNumber = matchRet[1];
             }
         }
 
         return {
             items: foundItems,
             returnNumber: returnNumber,
+            retDate: retDate,
             refInvoice: refInvoice,
+            refDate: refDate,
             productName: foundItems.length > 0 ? foundItems[0].productName : ""
         };
 
